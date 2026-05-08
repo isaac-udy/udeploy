@@ -75,6 +75,20 @@ On every launch:
   shared utilities. JVM target for tooling, native target for the launcher.
 - **`:launcher`** — Kotlin/Native module producing per-OS launcher binaries.
 
+## Build host requirements
+
+The launcher's webview cinterop is per-target. Each target requires a
+matching toolchain on the build host; tasks for targets the host can't
+build for are skipped, so local devs only need the toolchain for their
+own host. CI builds the full matrix.
+
+| Target | Host | Required toolchain |
+|---|---|---|
+| macOS arm64 / x64 | macOS | Xcode CLT (`clang++` from `xcode-select --install`) |
+| Linux x64 | Linux | `apt install libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential` |
+| Windows x64 | macOS / Linux / Windows | `mingw-w64` cross-compiler. macOS: `brew install mingw-w64`. Debian: `apt install mingw-w64`. WebView2 SDK is fetched automatically. |
+| Linux arm64 | — | Webview build not yet wired up; uses a stub Platform.kt. |
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — how the launcher works and what it

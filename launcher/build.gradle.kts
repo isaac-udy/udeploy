@@ -76,6 +76,43 @@ val downloadWebview by tasks.registering {
 }
 
 // --------------------------------------------------------------------
+// WebView2 SDK
+//
+// Microsoft ships the WebView2 SDK as a NuGet package. A `.nupkg`
+// file is just a zip with `build/native/include/` (headers) and
+// `build/native/x64/WebView2LoaderStatic.lib`. We download a pinned
+// release and extract it for the Windows build to consume.
+// --------------------------------------------------------------------
+
+val webView2SdkVersion = "1.0.2792.45"
+val webView2SdkRoot: File = webviewBuildRoot.resolve("webview2-sdk-$webView2SdkVersion")
+val webView2IncludeDir: File = webView2SdkRoot.resolve("build/native/include")
+val webView2LibDir: File = webView2SdkRoot.resolve("build/native/x64")
+
+val downloadWebView2Sdk by tasks.registering {
+    description = "Download and extract Microsoft.Web.WebView2 NuGet package"
+    val nupkg = webviewBuildRoot.resolve("microsoft.web.webview2.$webView2SdkVersion.nupkg")
+    val sdkRoot = webView2SdkRoot
+    val buildRoot = webviewBuildRoot
+    val version = webView2SdkVersion
+    outputs.dir(sdkRoot)
+    onlyIf { !sdkRoot.exists() }
+    doLast {
+        buildRoot.mkdirs()
+        runProcess(
+            listOf(
+                "curl", "-fsSL",
+                "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$version",
+                "-o", nupkg.path,
+            )
+        )
+        sdkRoot.mkdirs()
+        // .nupkg is just a zip; unzip into the SDK root.
+        runProcess(listOf("unzip", "-q", "-o", nupkg.path, "-d", sdkRoot.path))
+    }
+}
+
+// --------------------------------------------------------------------
 // Per-platform webview static-library builds.
 //
 // Each task produces build/webview/lib/<target>/libwebview.a. Tasks
@@ -149,19 +186,72 @@ fun TaskContainer.registerBuildWebviewLinux(targetId: String) =
         }
     }
 
+/**
+ * Locate a mingw-w64 cross-compiler usable from the host. On macOS the
+ * canonical install is `brew install mingw-w64`. On Linux distros it
+ * varies (`mingw-w64`, `gcc-mingw-w64-x86-64`). On Windows native it's
+ * the toolchain bundled with msys2/mingw. Returns null if not found —
+ * the caller surfaces a friendly error pointing at the install
+ * instructions.
+ */
+fun findMingwTool(name: String): File? {
+    val candidates = sequence {
+        // PATH lookup via `which`.
+        try {
+            val process = ProcessBuilder("which", name).redirectErrorStream(false).start()
+            process.waitFor()
+            val out = process.inputStream.bufferedReader().readText().trim()
+            if (out.isNotBlank()) yield(File(out))
+        } catch (_: Throwable) {}
+        // Common Homebrew install paths.
+        yield(File("/opt/homebrew/bin/$name"))
+        yield(File("/usr/local/bin/$name"))
+    }
+    return candidates.firstOrNull { it.exists() && it.canExecute() }
+}
+
 fun TaskContainer.registerBuildWebviewMingw(targetId: String) =
     register("buildWebview${targetId.toCamelCase()}") {
-        description = "Compile webview as a static library for $targetId (mingw + WebView2 SDK) — TODO"
+        description = "Compile webview as a static library for $targetId (mingw + WebView2 SDK)"
         dependsOn(downloadWebview)
-        onlyIf { os.isWindows }
+        dependsOn(downloadWebView2Sdk)
+
+        val srcCc = webviewSourceDir.resolve("core/src/webview.cc")
+        val includeDir = webviewSourceDir.resolve("core/include")
+        val webview2Inc = webView2IncludeDir
+        val outDir = webviewBuildRoot.resolve("lib/$targetId")
+        val outLib = outDir.resolve("libwebview.a")
+        val objFile = webviewBuildRoot.resolve("obj/$targetId/webview.o")
+
+        outputs.file(outLib)
+        onlyIf { !outLib.exists() }
+
         doLast {
-            // Coming in a follow-up commit. Plan:
-            //   1. Fetch Microsoft.Web.WebView2 NuGet package (it's a zip).
-            //   2. Compile webview.cc with mingw g++ pointing at the SDK
-            //      headers (build/native/include) and SDK lib.
-            //   3. Produce libwebview.a; cinterop links against it +
-            //      WebView2LoaderStatic.lib via linkerOpts.mingw_x64.
-            error("Windows webview build not yet implemented; coming in a follow-up commit")
+            val gxx = findMingwTool("x86_64-w64-mingw32-g++")
+                ?: error(
+                    "x86_64-w64-mingw32-g++ not found. Install mingw-w64:\n" +
+                        "  macOS:   brew install mingw-w64\n" +
+                        "  Debian:  sudo apt-get install mingw-w64\n" +
+                        "  Windows: install via msys2 (pacman -S mingw-w64-x86_64-toolchain)"
+                )
+            val ar = findMingwTool("x86_64-w64-mingw32-ar")
+                ?: error("x86_64-w64-mingw32-ar not found alongside g++ — broken mingw install?")
+
+            outDir.mkdirs()
+            objFile.parentFile.mkdirs()
+
+            runProcess(
+                listOf(
+                    gxx.path,
+                    "-std=c++14",
+                    "-DWEBVIEW_STATIC",
+                    "-I", includeDir.path,
+                    "-I", webview2Inc.path,
+                    "-c", srcCc.path,
+                    "-o", objFile.path,
+                )
+            )
+            runProcess(listOf(ar.path, "rcs", outLib.path, objFile.path))
         }
     }
 
@@ -251,6 +341,43 @@ fun KotlinNativeTarget.configureWebviewCinterop(
     }
 }
 
+/**
+ * Mingw variant of [configureWebviewCinterop] — additionally wires up
+ * the WebView2 SDK include path (so the cinterop binding generation
+ * can resolve any platform-specific declarations the headers expose
+ * on Windows) and the WebView2LoaderStatic.lib library path so the
+ * link step can resolve the COM-loader symbols.
+ */
+fun KotlinNativeTarget.configureWebviewCinteropMingw(
+    targetId: String,
+    buildTaskProvider: TaskProvider<*>,
+) {
+    val staticLib = webviewBuildRoot.resolve("lib/$targetId/libwebview.a")
+    compilations.named("main").configure {
+        cinterops.create("webview") {
+            defFile(project.file("src/nativeInterop/cinterop/webview.def"))
+            includeDirs(
+                webviewSourceDir.resolve("core/include"),
+                webView2IncludeDir,
+            )
+        }
+    }
+    binaries.all {
+        if (this is org.jetbrains.kotlin.gradle.plugin.mpp.Executable) {
+            linkTaskProvider.configure {
+                dependsOn(buildTaskProvider)
+                dependsOn(downloadWebView2Sdk)
+            }
+            linkerOpts.add("-L${staticLib.parentFile.path}")
+            linkerOpts.add("-L${webView2LibDir.path}")
+            linkerOpts.add("-lwebview")
+            // WebView2LoaderStatic.lib ships as MSVC COFF; mingw can
+            // link it directly via -l:filename.
+            linkerOpts.add("-l:WebView2LoaderStatic.lib")
+        }
+    }
+}
+
 kotlin {
     val nativeTargets = listOf(
         macosArm64(),
@@ -272,8 +399,9 @@ kotlin {
     macosArm64 { configureWebviewCinterop("macos-arm64", buildWebviewMacosArm64) }
     macosX64 { configureWebviewCinterop("macos-x64", buildWebviewMacosX64) }
     linuxX64 { configureWebviewCinterop("linux-x64", buildWebviewLinuxX64) }
-    // linuxArm64 webview build not yet wired up — uses the stub Platform.kt.
-    mingwX64 { configureWebviewCinterop("mingw-x64", buildWebviewMingwX64) }
+    mingwX64 { configureWebviewCinteropMingw("mingw-x64", buildWebviewMingwX64) }
+    // linuxArm64 still uses a standalone stub Platform.kt — the
+    // webview build for that target hasn't been wired up yet.
 
     // Shared source set for targets that have a webview cinterop. The
     // launcher's UI code is identical across them (same C API). Only
