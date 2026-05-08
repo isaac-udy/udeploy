@@ -90,6 +90,62 @@ fun TaskContainer.registerBuildWebview(target: String, arch: String) =
 
 val buildWebviewMacosArm64 = tasks.registerBuildWebview("macos-arm64", "arm64")
 
+// --------------------------------------------------------------------
+// macOS .app bundle
+//
+// Wraps the linked Kotlin/Native executable in a minimal .app
+// directory so it's double-clickable from Finder. Not signed or
+// notarized — that's a downstream consumer concern (and a separate
+// pipeline). For now this is enough to manually test the launcher
+// like a real desktop app.
+// --------------------------------------------------------------------
+
+val packageMacosArm64App by tasks.registering {
+    description = "Wrap the macOS arm64 launcher binary in a .app bundle"
+    val nativeOutputDir = layout.buildDirectory.dir("bin/macosArm64/releaseExecutable").get().asFile
+    val executable = nativeOutputDir.resolve("udeploy-launcher.kexe")
+    val appDir = layout.buildDirectory.dir("packagedApp/macosArm64/udeploy-launcher.app").get().asFile
+
+    inputs.file(executable)
+    outputs.dir(appDir)
+
+    doLast {
+        val contentsDir = appDir.resolve("Contents")
+        val macosDir = contentsDir.resolve("MacOS")
+        appDir.deleteRecursively()
+        macosDir.mkdirs()
+
+        executable.copyTo(macosDir.resolve("udeploy-launcher"), overwrite = true)
+        macosDir.resolve("udeploy-launcher").setExecutable(true)
+
+        contentsDir.resolve("Info.plist").writeText(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>CFBundleName</key>            <string>udeploy-launcher</string>
+                <key>CFBundleDisplayName</key>     <string>udeploy launcher</string>
+                <key>CFBundleIdentifier</key>      <string>dev.isaacudy.udeploy.launcher</string>
+                <key>CFBundleVersion</key>         <string>0.1.0</string>
+                <key>CFBundleShortVersionString</key><string>0.1.0</string>
+                <key>CFBundlePackageType</key>     <string>APPL</string>
+                <key>CFBundleExecutable</key>      <string>udeploy-launcher</string>
+                <key>LSMinimumSystemVersion</key>  <string>11.0</string>
+                <key>NSHighResolutionCapable</key> <true/>
+            </dict>
+            </plist>
+            """.trimIndent()
+        )
+
+        println("Built ${appDir.path}")
+    }
+}
+
+tasks.named("packageMacosArm64App") {
+    dependsOn("linkReleaseExecutableMacosArm64")
+}
+
 kotlin {
     val nativeTargets = listOf(
         macosArm64(),
