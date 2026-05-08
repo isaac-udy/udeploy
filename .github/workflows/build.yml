@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # macOS arm64 — runs on the M-series GitHub-hosted runner.
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Build launcher
+        run: ./gradlew :launcher:packageMacosArm64App
+      - uses: actions/upload-artifact@v4
+        with:
+          name: udeploy-launcher-macos-arm64
+          path: launcher/build/packagedApp/macosArm64/udeploy-launcher.app
+          if-no-files-found: error
+
+  # macOS x64 — runs on the Intel macOS runner.
+  build-macos-x64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Build launcher
+        run: ./gradlew :launcher:linkReleaseExecutableMacosX64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: udeploy-launcher-macos-x64
+          path: launcher/build/bin/macosX64/releaseExecutable/udeploy-launcher.kexe
+          if-no-files-found: error
+
+  # Linux x64 — needs gtk + webkit2gtk dev packages installed before
+  # the webview static library can compile.
+  build-linux-x64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK + WebKit2GTK dev packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config \
+            build-essential
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Build launcher
+        run: ./gradlew :launcher:linkReleaseExecutableLinuxX64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: udeploy-launcher-linux-x64
+          path: launcher/build/bin/linuxX64/releaseExecutable/udeploy-launcher.kexe
+          if-no-files-found: error
+
+  # Windows x64 — webview build infrastructure (WebView2 SDK +
+  # mingw) lands in a follow-up commit. For now we only verify the
+  # Kotlin side compiles.
+  build-windows-x64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: gradle/actions/setup-gradle@v3
+      - name: Compile Kotlin (link step deferred — Windows webview build TODO)
+        shell: bash
+        run: ./gradlew :launcher:compileKotlinMingwX64

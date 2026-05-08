@@ -1,3 +1,5 @@
+import org.gradle.internal.os.OperatingSystem
+import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 import java.io.File
 
 plugins {
@@ -10,14 +12,22 @@ plugins {
 //
 // Upstream webview ships source-only (single .h + single .cc) and is
 // MIT-licensed. We download a pinned release tarball, compile it to a
-// per-platform static library with `clang++` directly (no CMake
-// dependency), and feed the result into K/N cinterop.
+// per-platform static library with the host's toolchain, and feed the
+// result into K/N cinterop.
+//
+// macOS: clang++ with -framework WebKit -framework Cocoa
+// Linux: g++ with $(pkg-config --cflags gtk+-3.0 webkit2gtk-4.1)
+// Windows: mingw g++ with the WebView2 SDK NuGet package
+//
+// Per-target build tasks all exist, but each one's `onlyIf` skips it
+// when the host can't compile for that target. A macOS host only
+// builds the macOS static lib; CI runs the matrix to cover all three
+// platforms.
 // --------------------------------------------------------------------
 
+val os: OperatingSystem = OperatingSystem.current()
 val webviewVersion = "0.12.0"
 val webviewBuildRoot: File = layout.buildDirectory.dir("webview").get().asFile
-// tar xzf extracts the tarball's top-level dir directly into webviewBuildRoot
-// (no nested `source/` segment), so the source dir is just the version name.
 val webviewSourceDir: File = webviewBuildRoot.resolve("webview-$webviewVersion")
 
 fun runProcess(command: List<String>, workingDir: File? = null) {
@@ -30,6 +40,18 @@ fun runProcess(command: List<String>, workingDir: File? = null) {
     if (exitCode != 0) {
         error("Command failed (exit $exitCode): ${command.joinToString(" ")}\n$output")
     }
+}
+
+fun runProcessCapture(command: List<String>): String {
+    val process = ProcessBuilder(command)
+        .redirectErrorStream(false)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    val exitCode = process.waitFor()
+    if (exitCode != 0) {
+        error("Command failed (exit $exitCode): ${command.joinToString(" ")}")
+    }
+    return output
 }
 
 val downloadWebview by tasks.registering {
@@ -53,24 +75,28 @@ val downloadWebview by tasks.registering {
     }
 }
 
-fun TaskContainer.registerBuildWebview(target: String, arch: String) =
-    register("buildWebview${target.replace('-', '_').replaceFirstChar { it.uppercase() }}") {
-        description = "Compile webview as a static library for $target"
+// --------------------------------------------------------------------
+// Per-platform webview static-library builds.
+//
+// Each task produces build/webview/lib/<target>/libwebview.a. Tasks
+// are skipped (not failed) when the host can't build for that target
+// — local devs only build their host's matching target; CI runs the
+// matrix.
+// --------------------------------------------------------------------
+
+fun TaskContainer.registerBuildWebviewMacOS(targetId: String, arch: String) =
+    register("buildWebview${targetId.toCamelCase()}") {
+        description = "Compile webview as a static library for $targetId (clang++)"
         dependsOn(downloadWebview)
         val srcCc = webviewSourceDir.resolve("core/src/webview.cc")
         val includeDir = webviewSourceDir.resolve("core/include")
-        val outDir = webviewBuildRoot.resolve("lib/$target")
+        val outDir = webviewBuildRoot.resolve("lib/$targetId")
         val outLib = outDir.resolve("libwebview.a")
-        val objFile = webviewBuildRoot.resolve("obj/$target/webview.o")
+        val objFile = webviewBuildRoot.resolve("obj/$targetId/webview.o")
         val archArg = arch
 
-        // No `inputs.dir(...)` — the source dir doesn't exist until
-        // downloadWebview runs, and Gradle validates inputs at graph
-        // time. We rely on `onlyIf { !outLib.exists() }` for skip-when-
-        // already-built; bumping `webviewVersion` forces a rebuild via
-        // the changed source-dir name.
         outputs.file(outLib)
-        onlyIf { !outLib.exists() }
+        onlyIf { os.isMacOsX && !outLib.exists() }
 
         doLast {
             outDir.mkdirs()
@@ -88,20 +114,73 @@ fun TaskContainer.registerBuildWebview(target: String, arch: String) =
         }
     }
 
-val buildWebviewMacosArm64 = tasks.registerBuildWebview("macos-arm64", "arm64")
+fun TaskContainer.registerBuildWebviewLinux(targetId: String) =
+    register("buildWebview${targetId.toCamelCase()}") {
+        description = "Compile webview as a static library for $targetId (g++ + pkg-config)"
+        dependsOn(downloadWebview)
+        val srcCc = webviewSourceDir.resolve("core/src/webview.cc")
+        val includeDir = webviewSourceDir.resolve("core/include")
+        val outDir = webviewBuildRoot.resolve("lib/$targetId")
+        val outLib = outDir.resolve("libwebview.a")
+        val objFile = webviewBuildRoot.resolve("obj/$targetId/webview.o")
+
+        outputs.file(outLib)
+        onlyIf { os.isLinux && !outLib.exists() }
+
+        doLast {
+            outDir.mkdirs()
+            objFile.parentFile.mkdirs()
+            // pkg-config gives us -I flags for gtk + webkit2gtk headers.
+            // Required dev packages on Debian/Ubuntu:
+            //   libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential
+            val pkgFlags = runProcessCapture(
+                listOf("pkg-config", "--cflags", "gtk+-3.0", "webkit2gtk-4.1")
+            ).split(" ").filter { it.isNotBlank() }
+            runProcess(
+                listOf("g++", "-std=c++14", "-fPIC", "-DWEBVIEW_STATIC") +
+                    pkgFlags +
+                    listOf(
+                        "-I", includeDir.path,
+                        "-c", srcCc.path,
+                        "-o", objFile.path,
+                    )
+            )
+            runProcess(listOf("ar", "rcs", outLib.path, objFile.path))
+        }
+    }
+
+fun TaskContainer.registerBuildWebviewMingw(targetId: String) =
+    register("buildWebview${targetId.toCamelCase()}") {
+        description = "Compile webview as a static library for $targetId (mingw + WebView2 SDK) — TODO"
+        dependsOn(downloadWebview)
+        onlyIf { os.isWindows }
+        doLast {
+            // Coming in a follow-up commit. Plan:
+            //   1. Fetch Microsoft.Web.WebView2 NuGet package (it's a zip).
+            //   2. Compile webview.cc with mingw g++ pointing at the SDK
+            //      headers (build/native/include) and SDK lib.
+            //   3. Produce libwebview.a; cinterop links against it +
+            //      WebView2LoaderStatic.lib via linkerOpts.mingw_x64.
+            error("Windows webview build not yet implemented; coming in a follow-up commit")
+        }
+    }
+
+val buildWebviewMacosArm64 = tasks.registerBuildWebviewMacOS("macos-arm64", "arm64")
+val buildWebviewMacosX64 = tasks.registerBuildWebviewMacOS("macos-x64", "x86_64")
+val buildWebviewLinuxX64 = tasks.registerBuildWebviewLinux("linux-x64")
+val buildWebviewMingwX64 = tasks.registerBuildWebviewMingw("mingw-x64")
 
 // --------------------------------------------------------------------
 // macOS .app bundle
 //
 // Wraps the linked Kotlin/Native executable in a minimal .app
 // directory so it's double-clickable from Finder. Not signed or
-// notarized — that's a downstream consumer concern (and a separate
-// pipeline). For now this is enough to manually test the launcher
-// like a real desktop app.
+// notarized — that's a downstream consumer concern.
 // --------------------------------------------------------------------
 
 val packageMacosArm64App by tasks.registering {
     description = "Wrap the macOS arm64 launcher binary in a .app bundle"
+    dependsOn("linkReleaseExecutableMacosArm64")
     val nativeOutputDir = layout.buildDirectory.dir("bin/macosArm64/releaseExecutable").get().asFile
     val executable = nativeOutputDir.resolve("udeploy-launcher.kexe")
     val appDir = layout.buildDirectory.dir("packagedApp/macosArm64/udeploy-launcher.app").get().asFile
@@ -142,8 +221,34 @@ val packageMacosArm64App by tasks.registering {
     }
 }
 
-tasks.named("packageMacosArm64App") {
-    dependsOn("linkReleaseExecutableMacosArm64")
+// --------------------------------------------------------------------
+// Kotlin/Native source set + cinterop wiring
+// --------------------------------------------------------------------
+
+fun String.toCamelCase(): String =
+    split('-').joinToString("") { it.replaceFirstChar { c -> c.uppercase() } }
+
+fun KotlinNativeTarget.configureWebviewCinterop(
+    targetId: String,
+    buildTaskProvider: TaskProvider<*>,
+) {
+    val staticLib = webviewBuildRoot.resolve("lib/$targetId/libwebview.a")
+    compilations.named("main").configure {
+        cinterops.create("webview") {
+            defFile(project.file("src/nativeInterop/cinterop/webview.def"))
+            includeDirs(webviewSourceDir.resolve("core/include"))
+        }
+    }
+    // Static library is supplied at link time (not at cinterop time)
+    // so on hosts that can't build for this target, cinterop binding
+    // generation still succeeds — only the link step fails.
+    binaries.all {
+        if (this is org.jetbrains.kotlin.gradle.plugin.mpp.Executable) {
+            linkTaskProvider.configure { dependsOn(buildTaskProvider) }
+            linkerOpts.add("-L${staticLib.parentFile.path}")
+            linkerOpts.add("-lwebview")
+        }
+    }
 }
 
 kotlin {
@@ -164,21 +269,16 @@ kotlin {
         }
     }
 
-    macosArm64 {
-        compilations.named("main").configure {
-            cinterops.create("webview") {
-                defFile(project.file("src/nativeInterop/cinterop/webview.def"))
-                includeDirs(webviewSourceDir.resolve("core/include"))
-                extraOpts(
-                    "-libraryPath", webviewBuildRoot.resolve("lib/macos-arm64").path,
-                    "-staticLibrary", "libwebview.a",
-                )
-                tasks.named(interopProcessingTaskName) {
-                    dependsOn(buildWebviewMacosArm64)
-                }
-            }
-        }
-    }
+    macosArm64 { configureWebviewCinterop("macos-arm64", buildWebviewMacosArm64) }
+    macosX64 { configureWebviewCinterop("macos-x64", buildWebviewMacosX64) }
+    linuxX64 { configureWebviewCinterop("linux-x64", buildWebviewLinuxX64) }
+    // linuxArm64 webview build not yet wired up — uses the stub Platform.kt.
+    mingwX64 { configureWebviewCinterop("mingw-x64", buildWebviewMingwX64) }
+
+    // Shared source set for targets that have a webview cinterop. The
+    // launcher's UI code is identical across them (same C API). Only
+    // linuxArm64 is excluded — it falls back to commonMain stub.
+    applyDefaultHierarchyTemplate()
 
     sourceSets {
         commonMain.dependencies {
@@ -186,5 +286,13 @@ kotlin {
             implementation(libs.kotlinx.serialization.core)
             implementation(libs.kotlinx.serialization.json)
         }
+
+        val webviewMain by creating {
+            dependsOn(commonMain.get())
+        }
+        macosArm64Main.get().dependsOn(webviewMain)
+        macosX64Main.get().dependsOn(webviewMain)
+        linuxX64Main.get().dependsOn(webviewMain)
+        mingwX64Main.get().dependsOn(webviewMain)
     }
 }

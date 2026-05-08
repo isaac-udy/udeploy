@@ -6,6 +6,14 @@ headerFilter = webview/webview.h
 # webview is a C++ library compiled into a static archive.
 linkerOpts.osx = -framework WebKit -framework Cocoa -framework Foundation -lc++
 
-# Static library is appended to the linker line by the Gradle cinterop
-# task via `staticLibrary(...)` rather than embedded here, so the
-# absolute path stays out of source.
+# Linux: GTK + WebKit2GTK plus the C++ stdlib. webkit2gtk-4.1 is the
+# modern API (libsoup3); webkit2gtk-4.0 (libsoup2) is older but more
+# widely available on conservative distros — switch to 4.0 here if
+# 4.1 isn't installable on a target distro.
+linkerOpts.linux_x64 = -lgtk-3 -lgdk-3 -lwebkit2gtk-4.1 -lgio-2.0 -lglib-2.0 -lgobject-2.0 -lpangocairo-1.0 -lpango-1.0 -lstdc++
+
+# Windows: WebView2 + the COM runtime libraries it relies on, plus
+# the C++ stdlib. The WebView2LoaderStatic library is provided by the
+# Microsoft.Web.WebView2 NuGet package which downloadWebView2Sdk
+# fetches at build time.
+linkerOpts.mingw_x64 = -lWebView2LoaderStatic -lole32 -lversion -ladvapi32 -lshell32 -lshlwapi -lstdc++

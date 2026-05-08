@@ -9,12 +9,16 @@ import dev.isaacudy.udeploy.launcher.cinterop.webview.webview_set_size
 import dev.isaacudy.udeploy.launcher.cinterop.webview.webview_set_title
 import kotlinx.cinterop.ExperimentalForeignApi
 
+// Shared `actual fun runLauncher` for every target that has a working
+// webview cinterop. The webview C API is identical across macOS,
+// Linux, and Windows so the same Kotlin code compiles for each — the
+// platform-specific differences live entirely in webview's static
+// library (which is built per-target by the buildWebview... tasks).
+//
+// linuxArm64 doesn't yet have a webview build, so it falls back to
+// the stub actual in linuxArm64Main/Platform.kt.
 @OptIn(ExperimentalForeignApi::class)
 actual fun runLauncher(args: Array<String>) {
-    // Open a small debug window so the launcher has a visible surface
-    // during development. The window's content is hardcoded HTML for
-    // now; real status / progress wiring lands once we have manifest
-    // fetching and payload swap implemented.
     val w = webview_create(/* debug = */ 1, /* window = */ null)
         ?: error("webview_create returned null")
     try {
