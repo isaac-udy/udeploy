@@ -85,7 +85,8 @@ own host. CI builds the full matrix.
 | Target | Host | Required toolchain |
 |---|---|---|
 | macOS arm64 / x64 | macOS | Xcode CLT (`clang++` from `xcode-select --install`) |
-| Linux x64 | Linux | `apt install libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential` |
+| Linux x64 | Linux native | `apt install libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config build-essential` |
+| Linux x64 (from macOS) | macOS | Run via Docker: `./scripts/build-linux.sh` (needs a Docker daemon — Colima recommended). The script invokes an Ubuntu container that has the GTK/WebKit2GTK headers; cross-compiling these directly on macOS isn't practical. |
 | Windows x64 | macOS / Linux / Windows | `mingw-w64` cross-compiler. macOS: `brew install mingw-w64`. Debian: `apt install mingw-w64`. WebView2 SDK is fetched automatically. |
 | Linux arm64 | — | Webview build not yet wired up; uses a stub Platform.kt. |
 
