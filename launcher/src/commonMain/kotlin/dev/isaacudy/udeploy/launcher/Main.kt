@@ -15,9 +15,17 @@ package dev.isaacudy.udeploy.launcher
  *  5. If the spawned JVM exits abnormally within a short window, mark
  *     the new payload as bad and roll back.
  *
- * For now this is a stub so the binaries can be produced end-to-end
- * before any of the real logic lands.
+ * For now this opens a debug window (where supported) so the launcher
+ * has a visible surface during development. Lifecycle wiring follows.
  */
 fun main(args: Array<String>) {
-    println("udeploy launcher (stub) — args: ${args.joinToString(" ")}")
+    println("udeploy launcher (debug) — args: ${args.joinToString(" ")}")
+    runLauncher(args)
 }
+
+/**
+ * Per-platform launcher entry point. Implementations open a window /
+ * dialog appropriate to the host OS; on platforms where the UI hasn't
+ * landed yet, this is a stub that just returns.
+ */
+expect fun runLauncher(args: Array<String>)

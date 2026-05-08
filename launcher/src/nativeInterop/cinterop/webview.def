@@ -1,0 +1,11 @@
+package = dev.isaacudy.udeploy.launcher.cinterop.webview
+headers = webview/webview.h
+headerFilter = webview/webview.h
+
+# macOS: link Cocoa/WebKit frameworks, plus the C++ stdlib since
+# webview is a C++ library compiled into a static archive.
+linkerOpts.osx = -framework WebKit -framework Cocoa -framework Foundation -lc++
+
+# Static library is appended to the linker line by the Gradle cinterop
+# task via `staticLibrary(...)` rather than embedded here, so the
+# absolute path stays out of source.
