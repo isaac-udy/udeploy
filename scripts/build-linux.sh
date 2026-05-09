@@ -46,6 +46,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # First build is ~5-7 minutes (downloading apt packages + Kotlin/Native
 # distribution); subsequent builds are ~30 seconds.
 docker run --rm \
+    --platform linux/amd64 \
     --volume "$REPO_ROOT":/work \
     --volume udeploy-gradle-cache:/root/.gradle \
     --volume udeploy-konan-cache:/root/.konan \

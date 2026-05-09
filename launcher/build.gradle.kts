@@ -222,6 +222,8 @@ fun TaskContainer.registerBuildWebviewMingw(targetId: String) =
         val outDir = webviewBuildRoot.resolve("lib/$targetId")
         val outLib = outDir.resolve("libwebview.a")
         val objFile = webviewBuildRoot.resolve("obj/$targetId/webview.o")
+        val stubCc = webviewBuildRoot.resolve("obj/$targetId/abi_stubs.cc")
+        val stubObj = webviewBuildRoot.resolve("obj/$targetId/abi_stubs.o")
 
         outputs.file(outLib)
         onlyIf { !outLib.exists() }
@@ -251,7 +253,38 @@ fun TaskContainer.registerBuildWebviewMingw(targetId: String) =
                     "-o", objFile.path,
                 )
             )
-            runProcess(listOf(ar.path, "rcs", outLib.path, objFile.path))
+
+            // ABI compatibility stub. The host's mingw libstdc++
+            // (e.g. brew's GCC 14) instantiates allocator templates
+            // that reference modern symbols not present in K/N's
+            // bundled mingw libstdc++ (older GCC). The two we've
+            // observed missing are below; provide stubs that just
+            // abort if ever called (they're only hit on integer-
+            // overflow allocation paths, which sane code doesn't
+            // reach). Compiled into the same archive as webview.o
+            // so the K/N link sees them as already-defined.
+            stubCc.writeText(
+                """
+                #include <cstdlib>
+                #include <exception>
+
+                namespace std {
+                    [[noreturn]] void __throw_bad_array_new_length() { std::abort(); }
+                    [[noreturn]] void __glibcxx_assert_fail(const char*, int, const char*, const char*) noexcept {
+                        std::abort();
+                    }
+                }
+                """.trimIndent()
+            )
+            runProcess(
+                listOf(
+                    gxx.path,
+                    "-std=c++14",
+                    "-c", stubCc.path,
+                    "-o", stubObj.path,
+                )
+            )
+            runProcess(listOf(ar.path, "rcs", outLib.path, objFile.path, stubObj.path))
         }
     }
 

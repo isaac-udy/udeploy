@@ -6,14 +6,42 @@ headerFilter = webview/webview.h
 # webview is a C++ library compiled into a static archive.
 linkerOpts.osx = -framework WebKit -framework Cocoa -framework Foundation -lc++
 
-# Linux: GTK + WebKit2GTK plus the C++ stdlib. webkit2gtk-4.1 is the
-# modern API (libsoup3); webkit2gtk-4.0 (libsoup2) is older but more
-# widely available on conservative distros — switch to 4.0 here if
-# 4.1 isn't installable on a target distro.
-linkerOpts.linux_x64 = -lgtk-3 -lgdk-3 -lwebkit2gtk-4.1 -lgio-2.0 -lglib-2.0 -lgobject-2.0 -lpangocairo-1.0 -lpango-1.0 -lstdc++
+# Linux: GTK + WebKit2GTK + JavaScriptCore-GTK plus the C++ stdlib.
+# webkit2gtk-4.1 is the modern API (libsoup3); webkit2gtk-4.0 is the
+# older libsoup2-based variant — switch the `-l...4.1` lines below
+# if you need to support the older API on a target distro.
+#
+# `-L/usr/lib/x86_64-linux-gnu` is needed because K/N's bundled
+# `ld.lld` doesn't automatically search system paths the way the
+# host's linker would. This is the canonical multiarch lib dir on
+# Debian/Ubuntu and is correct for the apt-installed dev packages.
+#
+# `-l:libstdc++.so.6` (with the explicit `:filename` form) forces the
+# linker to use the system-installed libstdc++ rather than the older
+# one in K/N's bundled sysroot — required because webview.cc is
+# compiled by Ubuntu's GCC and references modern C++ stdlib symbols
+# (e.g. `std::__throw_bad_array_new_length` from libstdc++ 9+) that
+# K/N's bundled libstdc++ predates.
+linkerOpts.linux_x64 = -L/usr/lib/x86_64-linux-gnu -lgtk-3 -lgdk-3 -lwebkit2gtk-4.1 -ljavascriptcoregtk-4.1 -lgio-2.0 -lglib-2.0 -lgobject-2.0 -lpangocairo-1.0 -lpango-1.0 -l:libstdc++.so.6
 
-# Windows: WebView2 + the COM runtime libraries it relies on, plus
-# the C++ stdlib. The WebView2LoaderStatic library is provided by the
+# Windows: WebView2 + the COM runtime libraries it relies on. The
+# WebView2LoaderStatic library is provided by the
 # Microsoft.Web.WebView2 NuGet package which downloadWebView2Sdk
 # fetches at build time.
-linkerOpts.mingw_x64 = -lWebView2LoaderStatic -lole32 -lversion -ladvapi32 -lshell32 -lshlwapi -lstdc++
+#
+# `-lstdc++` is intentionally NOT specified here — K/N's bundled
+# mingw toolchain ships both a static `libstdc++.a` and an import
+# `libstdc++.dll.a`, and listing the lib explicitly causes ld.lld
+# to pull in both, producing duplicate-symbol errors. K/N's default
+# link line resolves the C++ runtime correctly on its own.
+#
+# `--allow-multiple-definition` accommodates a real cross-toolchain
+# wart: webview.o is built with the host's mingw (e.g. brew's mingw-w64
+# on macOS) which inlines libstdc++ template instantiations into the
+# object, and K/N's bundled mingw also provides those same instantiations
+# in libstdc++.a. ld.lld treats both as strong and refuses unless told
+# to accept the first definition. The pragmatic alternative is
+# compiling webview with K/N's bundled mingw (Windows .exe binaries
+# that don't run on a non-Windows host), so this flag is the price
+# for cross-host Windows builds.
+linkerOpts.mingw_x64 = -lWebView2LoaderStatic -lole32 -lversion -ladvapi32 -lshell32 -lshlwapi -Wl,--allow-multiple-definition
