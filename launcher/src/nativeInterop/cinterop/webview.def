@@ -44,4 +44,4 @@ linkerOpts.linux_x64 = -L/usr/lib/x86_64-linux-gnu -lgtk-3 -lgdk-3 -lwebkit2gtk-
 # compiling webview with K/N's bundled mingw (Windows .exe binaries
 # that don't run on a non-Windows host), so this flag is the price
 # for cross-host Windows builds.
-linkerOpts.mingw_x64 = -lWebView2LoaderStatic -lole32 -lversion -ladvapi32 -lshell32 -lshlwapi -Wl,--allow-multiple-definition
+linkerOpts.mingw_x64 = -lWebView2LoaderStatic -lole32 -lversion -ladvapi32 -lshell32 -lshlwapi -Wl,--allow-multiple-definition -Wl,-subsystem,windows
