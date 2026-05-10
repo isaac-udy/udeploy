@@ -160,6 +160,8 @@ fun TaskContainer.registerBuildWebviewLinux(targetId: String) =
         val outDir = webviewBuildRoot.resolve("lib/$targetId")
         val outLib = outDir.resolve("libwebview.a")
         val objFile = webviewBuildRoot.resolve("obj/$targetId/webview.o")
+        val stubCc = webviewBuildRoot.resolve("obj/$targetId/abi_stubs.cc")
+        val stubObj = webviewBuildRoot.resolve("obj/$targetId/abi_stubs.o")
 
         outputs.file(outLib)
         onlyIf { os.isLinux && !outLib.exists() }
@@ -182,7 +184,30 @@ fun TaskContainer.registerBuildWebviewLinux(targetId: String) =
                         "-o", objFile.path,
                     )
             )
-            runProcess(listOf("ar", "rcs", outLib.path, objFile.path))
+
+            // Same ABI stub trick as the mingw build: K/N's bundled
+            // Linux toolchain has an older libstdc++ that doesn't
+            // provide a couple of newer symbols the build-host's GCC
+            // emits references to. Provide trapping stubs so the
+            // K/N link is satisfied; these paths are unreachable for
+            // sane allocations.
+            stubCc.writeText(
+                """
+                #include <cstdlib>
+                #include <exception>
+
+                namespace std {
+                    [[noreturn]] void __throw_bad_array_new_length() { std::abort(); }
+                    [[noreturn]] void __glibcxx_assert_fail(const char*, int, const char*, const char*) noexcept {
+                        std::abort();
+                    }
+                }
+                """.trimIndent()
+            )
+            runProcess(
+                listOf("g++", "-std=c++14", "-fPIC", "-c", stubCc.path, "-o", stubObj.path)
+            )
+            runProcess(listOf("ar", "rcs", outLib.path, objFile.path, stubObj.path))
         }
     }
 
